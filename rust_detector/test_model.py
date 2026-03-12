@@ -19,12 +19,13 @@ while cap.isOpened:
     ret, frame = cap.read()
 
     if ret:
-        results = model(frame, conf=0.50)
+        results = model(frame, conf=0.90)
         annotated_frame = results[0].plot()
 
         cv2.imshow("Screw Detection", annotated_frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
+        print("Quitting detection test...")
         break
 
 cap.release()

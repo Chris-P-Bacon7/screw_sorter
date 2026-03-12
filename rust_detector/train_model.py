@@ -13,16 +13,19 @@ project = rf.workspace("elevator-0iq4p").project("screw-yquuz")
 version = project.version(4)
 dataset = version.download("yolo26")
 
-# -------------------------------
+# --------  -----------------------
 print("Dataset downloaded.")
-model = YOLO("yolov8l.pt")
+model = YOLO("yolov8n.pt")
 print("Starting training...")
 
 results = model.train(
     data=f"{dataset.location}/data.yaml",
     epochs=300,
-    imgsz=640,
-    batch=4,
+    imgsz=320,
+    batch=16,
+    workers=6,
+    cache=True,
+    half=False,
     device="cpu",
     patience=30,
     plots=True

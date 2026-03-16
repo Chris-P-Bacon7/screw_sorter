@@ -9,9 +9,10 @@ load_dotenv(os.path.join("rust_detector", ".env"))
 
 api_key = os.getenv("API_KEY")
 rf = Roboflow(api_key)
-project = rf.workspace("elevator-0iq4p").project("screw-yquuz")
-version = project.version(4)
+project = rf.workspace("automated-game-bot").project("screw-yquuz-6ltpr")
+version = project.version(2)
 dataset = version.download("yolo26")
+                
 
 # --------  -----------------------
 print("Dataset downloaded.")
@@ -22,7 +23,7 @@ results = model.train(
     data=f"{dataset.location}/data.yaml",
     epochs=300,
     imgsz=320,
-    batch=16,
+    batch=8,
     workers=6,
     cache=True,
     half=False,

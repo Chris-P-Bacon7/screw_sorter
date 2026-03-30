@@ -3,7 +3,7 @@ from ultralytics import YOLO
 
 # --- 1. Load the Model ---
 file_name = "best.pt"
-file_path = f"runs\\detect\\train\\weights\\{file_name}"
+file_path = f"runs\\detect\\train2\\weights\\{file_name}"
 
 try:
     model = YOLO(file_path)

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def detect_rust(image, bbox, rust_threshold=0.10):
+def detect_rust(image, bbox, rust_threshold=0.05):
     """
     Analyzes a YOLO bounding box to determine if a screw is rusted.
     
@@ -14,9 +14,6 @@ def detect_rust(image, bbox, rust_threshold=0.10):
         is_rusted (bool): True if rusted, False otherwise.
         rust_ratio (float): The actual percentage of rust detected (for debugging).
     """
-    
-def detect_rust(image, bbox, rust_threshold=0.05):
-    """Analyzes a YOLO bounding box to determine if a screw is rusted."""
     x1, y1, x2, y2 = map(int, bbox)
     h, w = image.shape[:2]
     x1, y1 = max(0, x1), max(0, y1)

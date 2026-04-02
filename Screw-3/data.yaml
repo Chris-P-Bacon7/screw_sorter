@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 2
+names: ['Screw', 'Screw - v4 2023-04-26 1-53pm']
+
+roboflow:
+  workspace: automated-game-bot
+  project: screw-yquuz-6ltpr
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/automated-game-bot/screw-yquuz-6ltpr/dataset/3

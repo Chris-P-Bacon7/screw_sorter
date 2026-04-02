@@ -5,7 +5,10 @@ import serial
 import time
 import tkinter as tk
 from ultralytics import YOLO
-from vision_controller.rust_detector.rust_detection import detect_rust
+from screw_vision.screw_analyzer import ScrewAnalyzer
+
+# Initialize ScrewAnalyzer (Adjust the 30.0 based on your physical calibration!)
+screw_analyzer = ScrewAnalyzer(pixels_per_cm=30.0)
 
 # Get screen resolution using tkinter
 root = tk.Tk()
@@ -37,7 +40,7 @@ except Exception as e:
 # --- 2. YOLO AI SETUP ---
 # ==========================================
 file_name = "best.pt"
-file_path = f"runs\\detect\\train2\\weights\\{file_name}"
+file_path = f"runs\\detect\\train1\\weights\\{file_name}"
 
 try:
     print("Loading AI Brain...")
@@ -59,17 +62,31 @@ print("[2] Live Camera Feed (Conveyor Mode)")
 choice = None
 
 # ==========================================
-# --- 4A. STATIC IMAGE TEST ---
+# --- 4. EXECUTE SELECTION ---
 # ==========================================
 while choice not in ('1', '2'):
     choice = input("Enter 1 or 2: ").strip()
+    
+    # ==========================================
+    # --- 4A. STATIC IMAGE TEST ---
+    # ==========================================
     if choice == '1':
         print("\n--- Image Selection ---")
         print("[1] Clean Screw (screw_X)")
         print("[2] Rusted Screw (rusted_X)")
-        type_choice = input("Select image category (1 or 2): ").strip()
+        print("[3] Brown Screw (brown_X)")
         
-        prefix = "screw" if type_choice == '1' else "rusted"
+        type_choice = None
+        
+        while type_choice not in ['1', '2', '3']:
+            type_choice = input("Select image category: ").strip()
+            if type_choice == '1': prefix = "screw" 
+            elif type_choice == '2': prefix = "rusted"
+            elif type_choice == '3': prefix = "brown"
+            else: 
+                print("Invalid input. Please enter a number from the specified list above.")
+                continue
+            
         num_choice = input(f"Enter the image number for '{prefix}_X' (e.g., 1, 2, 3): ").strip()
         
         base_name = f"{prefix}_{num_choice}"
@@ -92,7 +109,7 @@ while choice not in ('1', '2'):
             exit()
 
         print(f"\nScanning {image_path} for screws...")
-        results = model(image, conf=0.50) 
+        results = model(image, conf=0.70) 
         annotated_image = results[0].plot() 
 
         if len(results[0].boxes) > 0:
@@ -101,25 +118,29 @@ while choice not in ('1', '2'):
             # Use a flag so we only send the FIRST screw's command to the Arduino
             first_screw = True
             
+            # PROPER LOOP INTEGRATION: Analyzing every screw found
             for box in results[0].boxes:
                 detected_class_id = int(box.cls[0].item())
                 screw_name = model.names[detected_class_id]
                 bbox = box.xyxy[0].cpu().numpy()
                 
-                is_rusted, rust_ratio = detect_rust(image, bbox, rust_threshold=0.15)
+                # Fetch both Rust and Length data
+                is_rusted, rust_ratio = screw_analyzer.detect_rust(image, bbox, rust_threshold=0.15)
+                screw_length_cm = screw_analyzer.measure_length(image, bbox)
+                
                 x1, y1 = int(bbox[0]), int(bbox[1])
                 text_y_position = y1 + 25 
                 
                 if is_rusted:
                     final_command = 0
-                    print(f" -> RUSTED {screw_name} detected! (Coverage: {rust_ratio * 100:.1f}%) | Command: {final_command}")
-                    cv2.putText(annotated_image, f"RUST ({rust_ratio*100:.0f}%)", (x1 + 5, text_y_position), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    print(f" -> RUSTED {screw_name} detected! (Coverage: {rust_ratio * 100:.1f}%, Length: {screw_length_cm:.2f}cm) | Command: {final_command}")
+                    cv2.putText(annotated_image, f"RUST ({rust_ratio*100:.0f}%) | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 else:
                     final_command = detected_class_id
-                    print(f" -> CLEAN {screw_name} detected. | Command: {final_command}")
-                    cv2.putText(annotated_image, "CLEAN", (x1 + 5, text_y_position), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    print(f" -> CLEAN {screw_name} detected. (Length: {screw_length_cm:.2f}cm) | Command: {final_command}")
+                    cv2.putText(annotated_image, f"CLEAN | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                 # Send hardware command only for the very first screw we analyze
                 if first_screw and ser:
@@ -131,7 +152,7 @@ while choice not in ('1', '2'):
                     first_screw = False
         else:
             print("\nAI scanned the image but did NOT find any screws.")
-
+        
         print("\nPress ANY KEY in the image window to close it.")
         window_name = "Conveyor Vision System - Image Test"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -163,22 +184,25 @@ while choice not in ('1', '2'):
             ret, frame = cap.read()
             if not ret: break
             
-            results = model(frame, conf=0.50)
+            results = model(frame, conf=0.70)
             annotated_frame = results[0].plot()
 
             if len(results[0].boxes) > 0:
                 
-                # 1. Visually analyze and draw text for EVERY screw on screen
+                # 1. Visually analyze and draw text/length for EVERY screw on screen
                 for box in results[0].boxes:
                     bbox = box.xyxy[0].cpu().numpy()
-                    is_rusted, rust_ratio = detect_rust(frame, bbox, rust_threshold=0.15)
+                    
+                    is_rusted, rust_ratio = screw_analyzer.detect_rust(frame, bbox, rust_threshold=0.15)
+                    screw_length_cm = screw_analyzer.measure_length(frame, bbox)
+                    
                     x1, y1 = int(bbox[0]), int(bbox[1])
                     text_y_position = y1 + 25
                     
                     if is_rusted:
-                        cv2.putText(annotated_frame, f"RUST ({rust_ratio*100:.0f}%)", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        cv2.putText(annotated_frame, f"RUST ({rust_ratio*100:.0f}%) | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     else:
-                        cv2.putText(annotated_frame, "CLEAN", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.putText(annotated_frame, f"CLEAN | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                 # 2. ONLY send a command to the Arduino for the FIRST screw, and only if cooldown is done
                 if (time.time() - last_command_time > cooldown_duration):
@@ -187,14 +211,15 @@ while choice not in ('1', '2'):
                     screw_name = model.names[detected_class_id]
                     bbox = first_box.xyxy[0].cpu().numpy()
                     
-                    is_rusted, rust_ratio = detect_rust(frame, bbox, rust_threshold=0.15)
+                    is_rusted, rust_ratio = screw_analyzer.detect_rust(frame, bbox, rust_threshold=0.15)
+                    screw_length_cm = screw_analyzer.measure_length(frame, bbox)
                     
                     if is_rusted:
                         final_command = 0
-                        print(f"LIVE: RUSTED {screw_name} seen! Sending command 0.")
+                        print(f"LIVE: RUSTED {screw_name} ({screw_length_cm:.1f}cm) seen! Sending command 0.")
                     else:
                         final_command = detected_class_id
-                        print(f"LIVE: CLEAN {screw_name} seen! Sending command {final_command}.")
+                        print(f"LIVE: CLEAN {screw_name} ({screw_length_cm:.1f}cm) seen! Sending command {final_command}.")
 
                     if ser:
                         ser.write(str(final_command).encode('utf-8'))
@@ -219,7 +244,6 @@ while choice not in ('1', '2'):
         print("Invalid choice. Please type 1 or 2.")
         continue
         
-
 # ==========================================
 # --- 5. SHUTDOWN ---
 # ==========================================

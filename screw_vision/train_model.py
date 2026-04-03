@@ -11,7 +11,7 @@ if __name__ == '__main__':
     api_key = os.getenv("ROBOFLOW_API_KEY")
     rf = Roboflow(api_key)
     project = rf.workspace("automated-game-bot").project("screw-yquuz-6ltpr")
-    version = project.version(3)
+    version = project.version(4)
     dataset = version.download("yolo26")
                     
 
@@ -27,7 +27,7 @@ if __name__ == '__main__':
                 batch=16, # Significantly increased batch size for the RTX 5070
                 device=0,
                 workers=8, # Utilize the multi-core Ryzen CPU for faster data loading
-                patience=30,
+                patience=50,
                 plots=True
             )
 

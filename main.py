@@ -8,7 +8,7 @@ from ultralytics import YOLO
 from screw_vision.screw_analyzer import ScrewAnalyzer
 
 # Initialize ScrewAnalyzer (Adjust the 30.0 based on your physical calibration!)
-screw_analyzer = ScrewAnalyzer(pixels_per_cm=30.0)
+screw_analyzer = ScrewAnalyzer(pixels_per_cm=50.0)
 
 # Get screen resolution using tkinter
 root = tk.Tk()
@@ -75,17 +75,16 @@ while choice not in ('1', '2'):
         print("[1] Clean Screw (screw_X)")
         print("[2] Rusted Screw (rusted_X)")
         print("[3] Brown Screw (brown_X)")
+        print("[4] Mixed Screws (mixed_X)")
+
+        options = ["clean", "rusted", "brown", "mixed"]
         
-        type_choice = None
-        
-        while type_choice not in ['1', '2', '3']:
-            type_choice = input("Select image category: ").strip()
-            if type_choice == '1': prefix = "screw" 
-            elif type_choice == '2': prefix = "rusted"
-            elif type_choice == '3': prefix = "brown"
-            else: 
-                print("Invalid input. Please enter a number from the specified list above.")
-                continue
+        while True:
+            type_choice = input("Select image category (1-4): ").strip()
+            if type_choice in ['1', '2', '3', '4']:
+                prefix = options[int(type_choice) - 1]
+                break
+            print("Invalid input. Please enter a number from 1 to 4.")
             
         num_choice = input(f"Enter the image number for '{prefix}_X' (e.g., 1, 2, 3): ").strip()
         

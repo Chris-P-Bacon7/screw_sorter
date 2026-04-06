@@ -236,6 +236,12 @@ while choice not in ('1', '2'):
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+            
+            try:
+                pass
+            except KeyboardInterrupt:
+                print("Program terminated.")
+                exit()
                 
         cap.release()
 

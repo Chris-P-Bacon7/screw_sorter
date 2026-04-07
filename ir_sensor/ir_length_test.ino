@@ -36,6 +36,14 @@ void loop()
     Serial.print("Duration: ");
     Serial.print(duration);
     Serial.println(" ms");
+
+    if (duration <= 2500) {
+        Serial.println(" Screw length = short");
+      } else if (duration <= 3300) {
+        Serial.println(" Screw length = medium");
+      } else {
+        Serial.println(" Screw length = long");
+    }
   }
 
   digitalWrite(LED_BUILTIN, IRvalueD == LOW ? HIGH : LOW);

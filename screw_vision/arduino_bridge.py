@@ -1,62 +1,69 @@
 import serial
+import serial.tools.list_ports
 import time
 
-# --- 1. Configuration ---
-# CHANGE THIS to match your Arduino's port (e.g., 'COM3' for Windows or '/dev/tty.usbmodem...' for Mac)
-ARDUINO_PORT = 'COM7' 
-BAUD_RATE = 9600
-
-# --- 2. Connect to Arduino ---
-try:
-    print(f"Connecting to Arduino on {ARDUINO_PORT}...")
-    # Open the serial port
-    ser = serial.Serial(ARDUINO_PORT, BAUD_RATE, timeout=1)
-    
-    # Crucial: The Arduino resets every time a Python script connects to it. 
-    # We must wait 2 seconds for it to wake up before sending commands!
-    time.sleep(2) 
-    print("Connection established!\n")
-except Exception as e:
-    print(f"Critical Error: Could not connect to {ARDUINO_PORT}. Details: {e}")
-    exit()
-
-# Dictionary to map numbers to the exact array in your Arduino code
-screw_dict = {
-    '0': 'Rusted',
-    '1': 'Robertson',
-    '2': 'Phillips',
-    '3': 'Slot',
-    '4': 'Hex'
-}
-
-print("--- Conveyor Belt Control Bridge ---")
-print("Enter a number to simulate detecting a screw:")
-for key, value in screw_dict.items():
-    print(f"  {key} : {value}")
-print("Type 'q' to quit.\n")
-
-# --- 3. The Communication Loop ---
-while True:
-    user_input = input("Enter screw type (0-4): ").strip()
-
-    if user_input.lower() == 'q':
-        print("Closing bridge...")
-        break
-
-    if user_input in screw_dict:
-        print(f"--> Sending '{screw_dict[user_input]}' command to Arduino...")
+class ArduinoBridge:
+    def __init__(self, port=None, baud_rate=9600):
+        self.baud_rate = baud_rate
+        self.ser = None
         
-        # We must encode the string into bytes before sending it over the USB cable
-        ser.write(user_input.encode('utf-8'))
-        
-        # Wait a moment to let the Arduino process and reply
-        time.sleep(0.5)
-        
-        # Read any text the Arduino sends back to us (for debugging)
-        while ser.in_waiting > 0:
-            arduino_reply = ser.readline().decode('utf-8').strip()
-            print(f"    Arduino Reply: {arduino_reply}")
-    else:
-        print("Invalid input. Please enter 0, 1, 2, 3, or 4.")
+        # Added S and P to allowed commands
+        self.cmd_dict = {
+            '0': 'Rusted',
+            '1': 'Robertson',
+            '2': 'Phillips',
+            '3': 'Slot',
+            '4': 'Hex',
+            'S': 'Start Belt',
+            'P': 'Pause Belt'
+        }
 
-ser.close()
+        self.port = port if port else self.find_arduino_port()
+
+        if not self.port:
+            print("\n[!] Hardware Warning: Could not find an Arduino UNO connected to this PC.")
+            print("[!] Continuing in 'AI-Only' simulation mode...\n")
+            return
+
+        try:
+            print(f"Connecting to Arduino on {self.port}...")
+            self.ser = serial.Serial(self.port, self.baud_rate, timeout=1)
+            print("Waiting 2 seconds for Arduino to wake up...")
+            time.sleep(2) 
+            print("Hardware Connection Established!\n")
+        except Exception as e:
+            print(f"\n[!] Hardware Warning: Could not connect to {self.port}.")
+            print(f"[!] Details: {e}")
+            print("[!] Continuing in 'AI-Only' simulation mode...\n")
+            self.ser = None
+
+    def find_arduino_port(self):
+        print("Scanning USB ports for Arduino UNO...")
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            if "Arduino" in port.description or "CH340" in port.description or "UNO" in port.description:
+                print(f"--> Found Arduino! Device: {port.device} | Desc: {port.description}")
+                return port.device
+        return None
+
+    def send_command(self, command):
+        if self.ser is None:
+            return False
+
+        cmd_str = str(command)
+        if cmd_str in self.cmd_dict:
+            self.ser.write(cmd_str.encode('utf-8'))
+            time.sleep(0.1) 
+            while self.ser.in_waiting > 0:
+                reply = self.ser.readline().decode('utf-8').strip()
+                if reply:
+                    print(f"    [Arduino]: {reply}")
+            return True
+        else:
+            print(f"[!] Invalid command sent to ArduinoBridge: {cmd_str}")
+            return False
+
+    def close(self):
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+            print("Hardware disconnected safely.")

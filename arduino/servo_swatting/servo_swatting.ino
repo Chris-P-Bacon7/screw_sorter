@@ -3,19 +3,20 @@
 #include <IRremote.hpp> 
 
 // ==========================================
-// --- 1. HARDWARE PINS ---
+// --- 1. HARDWARE PINS & SERVO CONFIG ---
 // ==========================================
 const int irReceiverPin = 4; 
 const int servoPin = 3;
 const int ledPin = 13;   
 const int buzzerPin = 5; 
 
-// Stepper Motor Pins
-const int stepPin = A2;  // Connected to PUL+
-const int dirPin = A1;   // Connected to DIR+
-
-// IR Obstacle Gate Sensor
+const int stepPin = A2;  
+const int dirPin = A1;   
 const int irGatePin = 2; 
+
+// --- DIVERTER SETTINGS ---
+const int SERVO_CLOSED = 90;  // Normal position (lets clean screws slide past)
+const int SERVO_OPEN = 180;   // Divert position (drops rusted screws into early bin)
 
 LiquidCrystal lcd(7, 8, 9, 10, 11, 12);
 Servo swatterServo;
@@ -23,18 +24,16 @@ Servo swatterServo;
 // ==========================================
 // --- 2. SYSTEM VARIABLES ---
 // ==========================================
-String screwTypes[] = {"Rusted", "Robertson", "Phillips", "Slot", "Hex"};
+String screwTypes[] = {"Rusted", "Clean", "Phillips", "Slot", "Hex"};
 bool systemRunning = false; 
 bool displayNeedsUpdate = true; 
 bool screenOn = true;
 
-// Stepper Motor Speed Control
 unsigned long lastStepMicros = 0;
 int stepSpeed = 2500; 
 const int maxSpeed = 300;  
 const int minSpeed = 5000; 
 
-// Object Tracking Memory
 int pendingScrewIndex = -1;    
 bool waitingForGate = false;   
 
@@ -53,30 +52,25 @@ void setup() {
   
   pinMode(ledPin, OUTPUT); 
   pinMode(buzzerPin, OUTPUT); 
-  
-  // FIX 1: Using INPUT_PULLUP to stabilize the sensor signal
   pinMode(irGatePin, INPUT_PULLUP);
   
   pinMode(stepPin, OUTPUT);
   pinMode(dirPin, OUTPUT);
-  digitalWrite(dirPin, HIGH); // Set initial belt direction to FORWARD
+  digitalWrite(dirPin, HIGH); 
   
   swatterServo.attach(servoPin);
-  swatterServo.write(90); 
+  swatterServo.write(SERVO_CLOSED); 
   
   lcd.begin(16, 2); 
   IrReceiver.begin(irReceiverPin, DISABLE_LED_FEEDBACK);
 
   playTone(831, 150); 
-  triggerToggle = true; 
 }
 
 void loop() {
-  
   // ==========================================
   // --- STRICT IR REMOTE LOGIC ---
   // ==========================================
-  
   if (IrReceiver.decode()) {
     if (IrReceiver.decodedIRData.protocol == NEC && !(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
       uint16_t command = IrReceiver.decodedIRData.command;
@@ -87,9 +81,7 @@ void loop() {
         else if (command == 70) { adjustSpeed(true); lastIRTime = currentTime; } 
         else if (command == 21) { adjustSpeed(false); lastIRTime = currentTime; } 
         else if (command == 64) { triggerToggle = true; lastIRTime = currentTime; } 
-        else if (command == 71) { 
-          if (systemRunning) { triggerDance = true; lastIRTime = currentTime; }
-        } 
+        else if (command == 71) { triggerDance = true; lastIRTime = currentTime; } 
         else if (systemRunning) {
           if (command == 22) { manualIRCommand = '0'; lastIRTime = currentTime; } 
           else if (command == 12) { manualIRCommand = '1'; lastIRTime = currentTime; } 
@@ -105,8 +97,6 @@ void loop() {
   // ==========================================
   // --- EXECUTING THE ACTIONS ---
   // ==========================================
-
-  // Screen Toggle
   if (triggerScreen) {
     triggerScreen = false;
     screenOn = !screenOn;
@@ -114,14 +104,12 @@ void loop() {
     else { lcd.noDisplay(); playTone(523, 100); }
   }
 
-  // Dance
   if (triggerDance) {
     triggerDance = false;
     celebrationDance();
     displayNeedsUpdate = true;
   }
 
-  // Play / Pause
   if (triggerToggle) {
     triggerToggle = false;
     systemRunning = !systemRunning;
@@ -133,9 +121,28 @@ void loop() {
   }
 
   // ==========================================
+  // --- GLOBAL SERIAL READER ---
+  // ==========================================
+  char incomingChar = '\0';
+  if (Serial.available() > 0) { incomingChar = Serial.read(); } 
+  else if (manualIRCommand != '\0') { incomingChar = manualIRCommand; manualIRCommand = '\0'; }
+
+  // Overrides from Python via USB
+  if (incomingChar == 'S' && !systemRunning) {
+    systemRunning = true;
+    playTone(831, 100); 
+    if (screenOn) showLoadingBar("Camera Live! ");
+    displayNeedsUpdate = true;
+  } 
+  else if (incomingChar == 'P' && systemRunning) {
+    systemRunning = false;
+    playTone(523, 100); 
+    displayNeedsUpdate = true;
+  }
+
+  // ==========================================
   // --- THE UNIFIED BRAIN ---
   // ==========================================
-  
   if (systemRunning) {
     // 1. Keep the belt rolling constantly!
     unsigned long currentMicros = micros();
@@ -146,24 +153,18 @@ void loop() {
       digitalWrite(stepPin, LOW);
     }
 
-    // 2. Default UI (Only updates if we aren't waiting for a screw to arrive)
+    // 2. Default UI 
     if (displayNeedsUpdate && screenOn && !waitingForGate) {
       printRow(0, "System: RUNNING");
-      printRow(1, "Awaiting Camera ");
+      printRow(1, "Awaiting Screws ");
       displayNeedsUpdate = false;
     }
 
-    // 3. Listen for the Camera or Remote
-    char incomingChar = '\0';
-    if (Serial.available() > 0) { incomingChar = Serial.read(); } 
-    else if (manualIRCommand != '\0') { incomingChar = manualIRCommand; manualIRCommand = '\0'; }
-
-    // 4. STEP 1: LOG THE SCREW IN MEMORY
+    // 3. STEP 1: LOG THE SCREW IN MEMORY
     if (incomingChar >= '0' && incomingChar <= '4' && !waitingForGate) {
       pendingScrewIndex = incomingChar - '0';
-      waitingForGate = true; // Tell the system to watch the gate sensor!
-      
-      playTone(1047, 50); // Little "I saw it!" chirp
+      waitingForGate = true; 
+      playTone(1047, 50); 
       
       if (screenOn) {
         printRow(0, "Seen: " + screwTypes[pendingScrewIndex]);
@@ -171,63 +172,63 @@ void loop() {
       }
     }
 
-    // 5. STEP 2: WAIT FOR IT TO HIT THE TRIPWIRE
-    // FIX 2: We flipped this from LOW to HIGH. 
+    // 4. STEP 2: WAIT FOR IT TO HIT THE TRIPWIRE
     if (waitingForGate && digitalRead(irGatePin) == HIGH) {
-      
       String detectedScrew = screwTypes[pendingScrewIndex];
-
-      Serial.print("Gate Triggered! Swatting ");
+      Serial.print("Gate Triggered! Checked: ");
       Serial.println(detectedScrew);
 
-      playTone(1319, 80); 
-      delay(20);
-      playTone(2093, 150); 
-
-      if (screenOn) printRow(0, "Swat: " + detectedScrew);
-      
-      // Execute the actual swat
+      // --- THE NEW DIVERTER LOGIC ---
       if (detectedScrew == "Rusted") {
-        if (screenOn) printRow(1, "Act: FAST +90");
-        swatFast(180);
-      } else if (detectedScrew == "Robertson") {
-        if (screenOn) printRow(1, "Act: FAST -90");
-        swatFast(0);
-      } else if (detectedScrew == "Phillips") {
-        if (screenOn) printRow(1, "Act: SLOW +90");
-        sweepSlow(180);
+        playTone(1319, 80); 
+        safeDelay(20);          
+        playTone(2093, 150); 
+        
+        if (screenOn) {
+            printRow(0, "Rejecting...");
+            printRow(1, "Act: DIVERTING!");
+        }
+        
+        // Open the trapdoor/diverter
+        swatterServo.write(SERVO_OPEN);
+        
+        // Wait 1.5 seconds for the screw to fall in
+        safeDelay(1500);         
+        
+        // Snap it closed again!
+        swatterServo.write(SERVO_CLOSED);
+        safeDelay(300); // Give the physical motor a moment to finish moving
+        
       } else {
-        if (screenOn) printRow(1, "Act: SLOW -90");
-        sweepSlow(0);
-      }
-      
-      delay(400);
-      
-      if (systemRunning) {
-        sweepSlow(90); 
-        delay(200);
+        // IT IS A CLEAN SCREW! The servo does absolutely nothing.
+        if (screenOn) {
+            printRow(0, "Clean: " + detectedScrew);
+            printRow(1, "Act: PASSING...");
+        }
+        
+        // Give the screw exactly 1 second to slide past the gate into the 
+        // mechanical sorter without triggering the sensor twice.
+        safeDelay(1000); 
       }
 
-      // Clear memory and reset UI
+      // Reset the gate logic
       waitingForGate = false;
       pendingScrewIndex = -1;
       displayNeedsUpdate = true;
 
-      // Clear any leftover signals
       while (IrReceiver.decode()) { IrReceiver.resume(); }
       lastIRTime = millis();
-      while (Serial.available() > 0) { Serial.read(); }
+      while (Serial.available() > 0) { Serial.read(); } 
     }
     
   } else {
     // PAUSED STATE
     if (displayNeedsUpdate && screenOn) {
-      swatterServo.write(90);
+      swatterServo.write(SERVO_CLOSED);
       printRow(0, "System: PAUSED");
-      printRow(1, "Awaiting Remote");
+      printRow(1, "Awaiting Camera");
       displayNeedsUpdate = false;
     }
-    while (Serial.available() > 0) { Serial.read(); }
   }
 }
 
@@ -243,15 +244,13 @@ void adjustSpeed(bool faster) {
     stepSpeed += 200; 
     if (stepSpeed > minSpeed) stepSpeed = minSpeed;
   }
-  
   playTone(1568, 50); 
-  
   if (screenOn) {
     lcd.clear();
     printRow(0, "BELT SPEED:");
     int displayLevel = map(stepSpeed, minSpeed, maxSpeed, 1, 15);
     printRow(1, "Level: " + String(displayLevel));
-    delay(500); 
+    safeDelay(500); 
     displayNeedsUpdate = true; 
   }
 }
@@ -273,33 +272,46 @@ void showLoadingBar(String label) {
     if (percent < 10) lcd.print(" ");
     lcd.print(percent);
     lcd.print("%");
-    
     lcd.setCursor(0, 1);
     for (int j = 0; j < i; j++) lcd.write(255); 
-    delay(random(10, 50));
+    safeDelay(random(10, 50)); 
   }
 }
 
-void swatFast(int targetAngle) {
-  if (targetAngle == 180) { swatterServo.write(70); delay(250); swatterServo.write(180); } 
-  else { swatterServo.write(110); delay(250); swatterServo.write(0); }
-}
-
-void sweepSlow(int targetAngle) {
-  if (targetAngle == 180) { swatterServo.write(60); delay(350); } 
-  else if (targetAngle == 0) { swatterServo.write(120); delay(350); }
-
-  int currentAngle = swatterServo.read();
-  if (targetAngle > currentAngle) {
-    for (int pos = currentAngle; pos <= targetAngle; pos++) { swatterServo.write(pos); delay(4); }
-  } else {
-    for (int pos = currentAngle; pos >= targetAngle; pos--) { swatterServo.write(pos); delay(4); }
+void playTone(int frequency, int durationMs) {
+  IrReceiver.stop(); 
+  long halfPeriod = 1000000L / frequency / 2;
+  long numCycles = (long)frequency * durationMs / 1000L;
+  for (long i = 0; i < numCycles; i++) {
+    digitalWrite(buzzerPin, HIGH);
+    delayMicroseconds(halfPeriod);
+    digitalWrite(buzzerPin, LOW);
+    delayMicroseconds(halfPeriod);
+    if (systemRunning) {
+      unsigned long currentMicros = micros();
+      if (currentMicros - lastStepMicros >= stepSpeed) {
+        lastStepMicros = currentMicros;
+        digitalWrite(stepPin, HIGH);
+        delayMicroseconds(2); 
+        digitalWrite(stepPin, LOW);
+      }
+    }
   }
+  IrReceiver.start();
 }
 
 void safeDelay(unsigned long waitTime) {
   unsigned long startTime = millis();
   while (millis() - startTime < waitTime) {
+    if (systemRunning) {
+      unsigned long currentMicros = micros();
+      if (currentMicros - lastStepMicros >= stepSpeed) {
+        lastStepMicros = currentMicros;
+        digitalWrite(stepPin, HIGH);
+        delayMicroseconds(5); 
+        digitalWrite(stepPin, LOW);
+      }
+    }
     if (IrReceiver.decode()) {
       if (IrReceiver.decodedIRData.protocol == NEC && !(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
         uint16_t command = IrReceiver.decodedIRData.command;
@@ -312,49 +324,99 @@ void safeDelay(unsigned long waitTime) {
       IrReceiver.resume();
       if (triggerScreen || triggerToggle) return; 
     }
-    delay(1);
   }
 }
 
-void playTone(int frequency, int durationMs) {
-  IrReceiver.stop(); 
-  long halfPeriod = 1000000L / frequency / 2;
-  long numCycles = (long)frequency * durationMs / 1000L;
-  
-  for (long i = 0; i < numCycles; i++) {
-    digitalWrite(buzzerPin, HIGH);
-    delayMicroseconds(halfPeriod);
-    digitalWrite(buzzerPin, LOW);
-    delayMicroseconds(halfPeriod);
+// --- TRIPWIRE DELAY FOR DANCE MODE ---
+bool danceDelay(unsigned long waitTime) {
+  unsigned long startTime = millis();
+  while (millis() - startTime < waitTime) {
+    
+    // 1. Check for Python Keyboard interrupt ('P' or 'S')
+    if (Serial.available() > 0) {
+      char c = Serial.peek();
+      if (c == 'P') {
+        Serial.read(); // Consume the Pause command
+        return true;   // Abort the dance!
+      } else if (c == 'S') {
+        return true;   // Leave 'S' in the buffer to start the belt, but abort dance!
+      }
+    }
+    
+    // 2. Check for IR Remote interrupt
+    if (IrReceiver.decode()) {
+      if (IrReceiver.decodedIRData.protocol == NEC && !(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
+        uint16_t command = IrReceiver.decodedIRData.command;
+        if (command == 64) { triggerToggle = true; IrReceiver.resume(); return true; } 
+        else if (command == 69) { triggerScreen = true; IrReceiver.resume(); return true; }
+      }
+      IrReceiver.resume();
+    }
+    delay(1); 
   }
-  IrReceiver.start();
+  return false;
 }
 
+// --- THE CRAZY DANCE ---
 void celebrationDance() {
-  if (screenOn) { printRow(0, "1. Stretching..."); printRow(1, ""); }
-  for(int pos = 90; pos <= 160; pos++) { swatterServo.write(pos); safeDelay(12); if(triggerScreen || triggerToggle) { swatterServo.write(90); return; } }
-  for(int pos = 160; pos >= 20; pos--) { swatterServo.write(pos); safeDelay(12); if(triggerScreen || triggerToggle) { swatterServo.write(90); return; } }
-  for(int pos = 20; pos <= 90; pos++)  { swatterServo.write(pos); safeDelay(12); if(triggerScreen || triggerToggle) { swatterServo.write(90); return; } }
-
-  if (screenOn) printRow(0, "2. The Jitter!");
-  for(int i = 0; i < 15; i++) { 
-    swatterServo.write(75); playTone(1568, 60); 
-    swatterServo.write(105); playTone(1319, 60); 
-  }
-  while (IrReceiver.decode()) { IrReceiver.resume(); }
-
-  if (screenOn) printRow(0, "3. Windmill!!");
-  for(int i = 0; i < 4; i++) { 
-    swatterServo.write(0); safeDelay(300); if(triggerScreen || triggerToggle) { swatterServo.write(90); return; }
-    swatterServo.write(180); safeDelay(300); if(triggerScreen || triggerToggle) { swatterServo.write(90); return; }
+  bool previousState = systemRunning;
+  systemRunning = false; 
+  
+  if (screenOn) { printRow(0, " * GOING CRAZY *"); printRow(1, "   \\(o_o)/   "); }
+  
+  // Phase 1: Machine Gun
+  for (int i=0; i<6; i++) {
+    swatterServo.write(0); playTone(1500, 40); if(danceDelay(60)) goto abortDance;
+    swatterServo.write(180); playTone(1000, 40); if(danceDelay(60)) goto abortDance;
   }
 
-  if (screenOn) printRow(0, "   * Bows * ");
-  swatterServo.write(90); 
-  playTone(831, 100); delay(50);
-  playTone(1047, 100); delay(50); 
-  playTone(1319, 200); 
-  while (IrReceiver.decode()) { IrReceiver.resume(); }
-  lastIRTime = millis();
-  safeDelay(1500); 
+  // Phase 2: The Glitch
+  if (screenOn) { printRow(1, "  GLITCHING...  "); }
+  for (int i=0; i<15; i++) {
+    swatterServo.write(random(20, 160));
+    playTone(random(400, 2500), 30);
+    if(danceDelay(40)) goto abortDance;
+  }
+
+  // Phase 3: The Slow Windup
+  if (screenOn) { printRow(1, "  WINDING UP!   "); }
+  swatterServo.write(SERVO_CLOSED);
+  for(int freq = 200; freq <= 2000; freq += 100) {
+    playTone(freq, 20);
+    if(danceDelay(20)) goto abortDance;
+  }
+
+  // Phase 4: The Helicopter
+  if (screenOn) { printRow(1, "  HELICOPTER!!  "); }
+  for (int i=0; i<5; i++) {
+    swatterServo.write(180); if(danceDelay(80)) goto abortDance;
+    swatterServo.write(0); if(danceDelay(80)) goto abortDance;
+  }
+  
+  // Bow
+  swatterServo.write(SERVO_CLOSED);
+  playTone(831, 100); if(danceDelay(50)) goto abortDance;
+  playTone(1047, 100); if(danceDelay(50)) goto abortDance;
+  playTone(1319, 200);
+  
+  // End naturally
+  while (IrReceiver.decode()) { IrReceiver.resume(); } 
+  while (Serial.available() > 0) { Serial.read(); }    
+  
+  systemRunning = previousState; 
+  displayNeedsUpdate = true;
+  return;
+  
+abortDance:
+  // --- EMERGENCY STOP TRIGGERED ---
+  swatterServo.write(SERVO_CLOSED);
+  systemRunning = false; 
+  displayNeedsUpdate = true;
+  
+  if (triggerToggle) {
+    triggerToggle = false; 
+    playTone(523, 100);
+  }
+  
+  while (IrReceiver.decode()) { IrReceiver.resume(); } 
 }

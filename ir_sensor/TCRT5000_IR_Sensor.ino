@@ -2,6 +2,13 @@
 // If not enough IR is received, then digital pin will be HIGH, then light will be off
 // vice versa
 
+//Circuit
+// Arduino Uno  -->   TCRT5000
+// 5v           --->   VCC
+// Grnd         --->   Grnd
+// A0           --->   A0
+// D8           --->   D0
+
 const int pinIRd = 8;
 const int pinIRa = A0;
 const int pinLED = 13;

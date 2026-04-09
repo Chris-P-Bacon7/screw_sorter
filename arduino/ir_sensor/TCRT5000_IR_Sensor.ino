@@ -1,3 +1,7 @@
+// Testing IR sensor reading
+// If not enough IR is received, then digital pin will be HIGH, then light will be off
+// vice versa
+
 const int pinIRd = 8;
 const int pinIRa = A0;
 const int pinLED = 13;
@@ -26,8 +30,7 @@ void loop()
   else {
     digitalWrite(LED_BUILTIN, LOW);
   }
-
-
+  
   delay(500);
   
   IRvalueA = analogRead(pinIRa);

@@ -8,7 +8,7 @@ from ultralytics import YOLO
 from pygrabber.dshow_graph import FilterGraph
 
 from screw_vision.screw_analyzer import ScrewAnalyzer
-from screw_vision.arduino_bridge import ArduinoBridge 
+from screw_vision.arduino_bridge import ArduinoBridge  
 
 # Initialize ScrewAnalyzer
 screw_analyzer = ScrewAnalyzer(pixels_per_cm=55.0)
@@ -33,7 +33,6 @@ def get_camera_index_by_name(camera_name):
 # ==========================================
 # --- 1. ARDUINO HARDWARE SETUP ---
 # ==========================================
-# We now initialize the hardware with a single, clean line of code!
 arduino = ArduinoBridge()
 
 # ==========================================
@@ -115,8 +114,6 @@ try:
                 first_screw = True
                 
                 for box in results[0].boxes:
-                    detected_class_id = int(box.cls[0].item())
-                    screw_name = model.names[detected_class_id]
                     bbox = box.xyxy[0].cpu().numpy()
                     
                     is_rusted, rust_ratio = screw_analyzer.detect_rust(image, bbox, rust_threshold=0.15)
@@ -125,16 +122,19 @@ try:
                     x1, y1 = int(bbox[0]), int(bbox[1])
                     text_y_position = y1 + 25 
                     
+                    # STRICT BINARY LOGIC
                     if is_rusted:
                         final_command = 0
-                        print(f" -> RUSTED {screw_name} detected! (Coverage: {rust_ratio * 100:.1f}%, Length: {screw_length_cm:.2f}cm)")
-                        cv2.putText(annotated_image, f"RUST ({rust_ratio*100:.0f}%) | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        screw_name = "Rusted"
+                        color = (0, 0, 255)
                     else:
-                        final_command = detected_class_id
-                        print(f" -> CLEAN {screw_name} detected. (Length: {screw_length_cm:.2f}cm)")
-                        cv2.putText(annotated_image, f"CLEAN | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        final_command = 1
+                        screw_name = "Clean"
+                        color = (0, 255, 0)
+                        
+                    print(f" -> {screw_name.upper()} detected! (Rust: {rust_ratio * 100:.1f}%, Length: {screw_length_cm:.2f}cm)")
+                    cv2.putText(annotated_image, f"{screw_name.upper()} ({rust_ratio*100:.0f}%) | {screw_length_cm:.1f}cm", (x1 + 5, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-                    # Send to Arduino via the Bridge!
                     if first_screw:
                         arduino.send_command(final_command)
                         first_screw = False
@@ -156,10 +156,10 @@ try:
             cam_index = get_camera_index_by_name(desired_camera)
 
             if cam_index is not None:
-                cap = cv2.VideoCapture(cam_index)
+                cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
             else:
                 print("Camera not found. Defaulting to index 0.")
-                cap = cv2.VideoCapture(0)
+                cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
             
             if not cap.isOpened():
                 print("Error: Could not open camera.")
@@ -168,6 +168,7 @@ try:
 
             shared_frame = None
             shared_results = []
+            shared_history = []  # <--- NEW: Store successful scans for the sidebar
             last_command_time = 0
             cooldown_duration = 3.0 
             is_running = True
@@ -175,10 +176,12 @@ try:
 
             # --- THE AI BACKGROUND WORKER ---
             def inference_worker():
-                global shared_frame, shared_results, last_command_time, is_running
+                global shared_frame, shared_results, shared_history, last_command_time, is_running
                 
                 tracked_screws = {}    
                 finalized_screws = {}  
+                
+                MIN_FRAMES_TO_VALIDATE = 5 
 
                 while is_running:
                     with data_lock:
@@ -191,7 +194,6 @@ try:
                         time.sleep(0.01)
                         continue
 
-                    # --- SMALLER ACTIVE ZONE ---
                     frame_h, frame_w = frame_to_process.shape[:2]
                     zone_x1 = int(frame_w * 0.35)
                     zone_x2 = int(frame_w * 0.65)
@@ -228,15 +230,13 @@ try:
                                     new_results.append((x1, y1, x2, y2, text, color))
                                 else:
                                     if track_id not in tracked_screws:
-                                        tracked_screws[track_id] = {'rust': [], 'len': [], 'cls': []}
+                                        tracked_screws[track_id] = {'rust': [], 'len': []}
 
                                     is_rusted, rust_ratio = screw_analyzer.detect_rust(frame_to_process, bbox, rust_threshold=0.15)
                                     screw_length_cm = screw_analyzer.measure_length(frame_to_process, bbox)
-                                    detected_class_id = int(box.cls[0].item())
                                     
                                     tracked_screws[track_id]['rust'].append(rust_ratio)
                                     tracked_screws[track_id]['len'].append(screw_length_cm)
-                                    tracked_screws[track_id]['cls'].append(detected_class_id)
                                     
                                     frames_scanned = len(tracked_screws[track_id]['rust'])
                                     text = f"SCANNING ({frames_scanned})..."
@@ -246,19 +246,20 @@ try:
                                 if track_id in tracked_screws:
                                     data = tracked_screws.pop(track_id)
                                     
-                                    if len(data['rust']) > 0:
+                                    if len(data['rust']) >= MIN_FRAMES_TO_VALIDATE:
                                         avg_rust = sum(data['rust']) / len(data['rust'])
                                         avg_len = sum(data['len']) / len(data['len'])
-                                        most_common_cls = max(set(data['cls']), key=data['cls'].count)
-                                        screw_name = model.names[most_common_cls]
                                         
+                                        # --- STRICT BINARY LIVE LOGIC ---
                                         if avg_rust >= 0.15:
                                             cmd = 0
-                                            text = f"RUST ({avg_rust*100:.0f}%) | {avg_len:.1f}cm"
+                                            screw_name = "RUSTED"
+                                            text = f"{screw_name} ({avg_rust*100:.0f}%) | {avg_len:.1f}cm"
                                             color = (0, 0, 255)
                                         else:
-                                            cmd = most_common_cls
-                                            text = f"CLEAN | {avg_len:.1f}cm"
+                                            cmd = 1
+                                            screw_name = "CLEAN"
+                                            text = f"{screw_name} ({avg_rust*100:.0f}%) | {avg_len:.1f}cm"
                                             color = (0, 255, 0)
                                             
                                         finalized_screws[track_id] = (text, color)
@@ -266,10 +267,19 @@ try:
                                         
                                         if (time.time() - last_command_time > cooldown_duration):
                                             command_to_send = cmd
-                                            if cmd == 0:
-                                                print(f"LIVE FINAL: RUSTED {screw_name} (Avg Rust: {avg_rust*100:.1f}%, Len: {avg_len:.1f}cm)")
-                                            else:
-                                                print(f"LIVE FINAL: CLEAN {screw_name} (Len: {avg_len:.1f}cm)")
+                                            print(f"LIVE FINAL: {screw_name} (Avg Rust: {avg_rust*100:.1f}%, Len: {avg_len:.1f}cm)")
+                                            
+                                            # --- NEW: ADD TO SIDEBAR HISTORY ---
+                                            history_entry = {
+                                                'name': screw_name,
+                                                'rust': f"{avg_rust*100:.1f}%",
+                                                'len': f"{avg_len:.1f}cm",
+                                                'color': color
+                                            }
+                                            with data_lock:
+                                                shared_history.insert(0, history_entry)
+                                                if len(shared_history) > 12: # Only keep last 12 to fit on screen
+                                                    shared_history.pop()
 
                                 elif track_id in finalized_screws:
                                     text, color = finalized_screws[track_id]
@@ -280,21 +290,42 @@ try:
                     missing_tracks = list(set(tracked_screws.keys()) - current_track_ids)
                     for m_id in missing_tracks:
                         data = tracked_screws.pop(m_id)
-                        if len(data['rust']) > 0:
+                        
+                        if len(data['rust']) >= MIN_FRAMES_TO_VALIDATE:
                             avg_rust = sum(data['rust']) / len(data['rust'])
                             avg_len = sum(data['len']) / len(data['len'])
-                            most_common_cls = max(set(data['cls']), key=data['cls'].count)
-                            screw_name = model.names[most_common_cls]
+                            
+                            # --- STRICT BINARY SAFETY NET LOGIC ---
+                            if avg_rust >= 0.15:
+                                cmd = 0
+                                screw_name = "RUSTED"
+                                color = (0, 0, 255)
+                            else:
+                                cmd = 1
+                                screw_name = "CLEAN"
+                                color = (0, 255, 0)
 
-                            cmd = 0 if avg_rust >= 0.15 else most_common_cls
                             if (time.time() - last_command_time > cooldown_duration):
                                 command_to_send = cmd
                                 print(f"LIVE FINAL (Lost Tracker): Computed {screw_name} | Cmd: {cmd}")
+                                
+                                # --- NEW: ADD TO SIDEBAR HISTORY ---
+                                history_entry = {
+                                    'name': screw_name,
+                                    'rust': f"{avg_rust*100:.1f}%",
+                                    'len': f"{avg_len:.1f}cm",
+                                    'color': color
+                                }
+                                with data_lock:
+                                    shared_history.insert(0, history_entry)
+                                    if len(shared_history) > 12:
+                                        shared_history.pop()
+                        else:
+                            print(f"[!] Ignored False Positive (Lost Tracker): Ghost vanished after {len(data['rust'])} frames.")
 
                     with data_lock:
                         shared_results = new_results
                         
-                    # Fire command to Arduino using the Bridge!
                     if command_to_send is not None:
                         arduino.send_command(command_to_send)
                         with data_lock:
@@ -304,12 +335,18 @@ try:
             worker_thread.start()
 
             # --- THE MAIN UI DISPLAY LOOP ---
-            print("\nStarting Live Feed! Press 'q' in the window or Ctrl+C in terminal to quit.")
+            print("\nStarting Live Feed!")
+            print(" -> Press 's' to START the conveyor belt.")
+            print(" -> Press 'p' to PAUSE the conveyor belt.")
+            print(" -> Press 'q' to QUIT the application.\n")
+            
             window_name = "Conveyor Vision System - Live Feed"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(window_name, max_window_width, max_window_height)
-            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1) 
-            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 0)
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL) 
+
+            # Sidebar width in pixels
+            sidebar_width = 350
 
             while True:
                 ret, frame = cap.read()
@@ -318,26 +355,54 @@ try:
                 with data_lock:
                     shared_frame = frame.copy()
                     current_results = shared_results.copy()
+                    current_history = shared_history.copy()
                     current_cooldown_time = last_command_time
 
                 frame_h, frame_w = frame.shape[:2]
+                
+                # --- NEW: Create an extended canvas ---
+                canvas = np.zeros((frame_h, frame_w + sidebar_width, 3), dtype=np.uint8)
+                canvas[:, :frame_w] = frame # Paste camera feed on the left
+                canvas[:, frame_w:] = (30, 30, 30) # Draw dark gray sidebar on the right
+                
+                # Draw active scan zones on the camera feed
                 zone_x1, zone_x2 = int(frame_w * 0.35), int(frame_w * 0.65)
                 zone_y1, zone_y2 = int(frame_h * 0.10), int(frame_h * 0.70)
                 
-                cv2.rectangle(frame, (zone_x1, zone_y1), (zone_x2, zone_y2), (255, 150, 0), 2)
-                cv2.putText(frame, "ACTIVE SCAN ZONE", (zone_x1 + 5, zone_y1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 0), 2)
+                cv2.rectangle(canvas, (zone_x1, zone_y1), (zone_x2, zone_y2), (255, 150, 0), 2)
+                cv2.putText(canvas, "ACTIVE SCAN ZONE", (zone_x1 + 5, zone_y1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 0), 2)
                     
+                # Draw bounding boxes
                 for (x1, y1, x2, y2, text, color) in current_results:
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame, text, (x1 + 5, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(canvas, text, (x1 + 5, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
                 if (time.time() - current_cooldown_time <= cooldown_duration):
-                    cv2.putText(frame, "COOLDOWN ACTIVE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                    cv2.putText(canvas, "COOLDOWN ACTIVE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-                cv2.imshow(window_name, frame)
+                # --- NEW: Draw the Sidebar Text ---
+                cv2.putText(canvas, "SCAN HISTORY", (frame_w + 20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+                cv2.line(canvas, (frame_w + 20, 50), (frame_w + sidebar_width - 20, 50), (150, 150, 150), 1)
                 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                y_offset = 85
+                for i, entry in enumerate(current_history):
+                    # Format: "1. RUSTED | Rust: 45.2% | 5.1cm"
+                    entry_text = f"{i+1}. {entry['name']} ({entry['rust']})"
+                    cv2.putText(canvas, entry_text, (frame_w + 20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.65, entry['color'], 2)
+                    cv2.putText(canvas, f"Len: {entry['len']}", (frame_w + 200, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
+                    y_offset += 35
+
+                cv2.imshow(window_name, canvas)
+                
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     break
+                elif key == ord('s'):
+                    print("\n--> Sending START command to Arduino...")
+                    arduino.send_command('S')
+                elif key == ord('p'):
+                    print("\n--> Sending PAUSE command to Arduino...")
+                    arduino.send_command('P')
                     
             is_running = False
             worker_thread.join()
@@ -351,5 +416,5 @@ except KeyboardInterrupt:
 # ==========================================
 finally:
     cv2.destroyAllWindows()
-    # Close the hardware bridge safely
+    arduino.send_command('P')
     arduino.close()
